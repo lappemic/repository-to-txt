@@ -1,101 +1,241 @@
-import Image from "next/image";
+// src/app/page.tsx
+"use client";
+
+import { useState } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
+import { Loader2, ClipboardCopy, Github, Download } from "lucide-react";
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="https://nextjs.org/icons/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+  const [url, setUrl] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState("");
+  const [status, setStatus] = useState("");
+  const [logs, setLogs] = useState<string[]>([]);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="https://nextjs.org/icons/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  const addLog = (message: string) => {
+    console.log(message); // Console logging
+    setLogs((prev) => [...prev, `${new Date().toISOString()}: ${message}`]);
+  };
+
+  const isValidGithubUrl = (url: string) => {
+    const isValid = /^https:\/\/github\.com\/[\w-]+\/[\w-]+/.test(url);
+    addLog(`URL validation: ${url} is ${isValid ? "valid" : "invalid"}`);
+    return isValid;
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    addLog("Form submitted");
+
+    if (!isValidGithubUrl(url)) {
+      setError("Please enter a valid GitHub repository URL");
+      addLog("Invalid URL provided");
+      return;
+    }
+
+    setIsLoading(true);
+    setError("");
+    setProgress(0);
+    setResult("");
+    setStatus("Initializing...");
+    setLogs([]);
+    addLog("Starting repository analysis");
+
+    try {
+      addLog("Sending request to API");
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+
+      addLog(`API response status: ${response.status}`);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        addLog(`API error: ${errorText}`);
+        throw new Error(errorText);
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      addLog("Starting stream processing");
+
+      while (reader) {
+        const { done, value } = await reader.read();
+        if (done) {
+          addLog("Stream complete");
+          break;
+        }
+
+        const chunk = decoder.decode(value, { stream: true });
+        addLog(`Received chunk of ${chunk.length} bytes`);
+        buffer += chunk;
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.trim() === "") continue;
+
+          try {
+            const data = JSON.parse(line);
+            addLog(`Processed message: ${JSON.stringify(data)}`);
+
+            if (data.error) {
+              throw new Error(data.error);
+            }
+            if (typeof data.progress === "number") {
+              setProgress(data.progress);
+            }
+            if (data.status) {
+              setStatus(data.status);
+            }
+            if (data.content) {
+              addLog(`Received content of ${data.content.length} characters`);
+              setResult((prev) => prev + data.content);
+            }
+          } catch (e) {
+            addLog(`Error parsing message: ${e}`);
+            console.error("Error parsing message:", line, e);
+          }
+        }
+      }
+
+      if (buffer) {
+        addLog("Processing remaining buffer");
+        try {
+          const data = JSON.parse(buffer);
+          if (data.content) {
+            setResult((prev) => prev + data.content);
+          }
+        } catch (e) {
+          addLog(`Error parsing final buffer: ${e}`);
+          console.error("Error parsing final message:", buffer, e);
+        }
+      }
+
+      setStatus("Analysis complete");
+      addLog("Analysis completed successfully");
+    } catch (err: unknown) {
+      const errorMessage =
+        err instanceof Error
+          ? err.message
+          : "An error occurred while analyzing the repository";
+      setError(errorMessage);
+      setStatus("Error occurred");
+      addLog(`Error in analysis: ${errorMessage}`);
+    } finally {
+      setIsLoading(false);
+      addLog("Process finished");
+    }
+  };
+
+  return (
+    <main className="min-h-screen p-8 bg-gray-50">
+      <div className="max-w-4xl mx-auto space-y-8">
+        <div className="space-y-2">
+          <h1 className="text-4xl font-bold">Repository to txt</h1>
+          <p className="text-gray-500">
+            Enter a GitHub repository URL to generate a consolidated view of the
+            codebase.
+          </p>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+
+        <div className="bg-white rounded-lg shadow-sm p-6 space-y-6">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="flex gap-2">
+              <Input
+                type="text"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://github.com/username/repository"
+                className="flex-1"
+                disabled={isLoading}
+              />
+              <Button type="submit" disabled={isLoading}>
+                {isLoading ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Github className="w-4 h-4 mr-2" />
+                )}
+                Analyze
+              </Button>
+            </div>
+
+            {isLoading && (
+              <div className="space-y-2">
+                <Progress value={progress} />
+                <p className="text-sm text-gray-500 text-center">
+                  {status} ({progress}%)
+                </p>
+              </div>
+            )}
+
+            {error && (
+              <Alert variant="destructive">
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+          </form>
+
+          {/* Debug Logs Section */}
+          <div className="space-y-2">
+            <h3 className="font-semibold">Debug Logs</h3>
+            <pre className="bg-gray-100 p-4 rounded-lg text-xs overflow-auto max-h-[200px] text-gray-700">
+              {logs.join("\n")}
+            </pre>
+          </div>
+
+          {result && (
+            <div className="space-y-4">
+              <div className="flex justify-between items-center">
+                <h2 className="text-xl font-semibold">Analysis Result</h2>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      navigator.clipboard.writeText(result);
+                      addLog("Copied result to clipboard");
+                    }}
+                  >
+                    <ClipboardCopy className="w-4 h-4 mr-2" />
+                    Copy
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      const blob = new Blob([result], { type: "text/plain" });
+                      const downloadUrl = window.URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = downloadUrl;
+                      a.download = `${url.split("/").pop() || "repository"}-analysis.txt`;
+                      document.body.appendChild(a);
+                      a.click();
+                      window.URL.revokeObjectURL(downloadUrl);
+                      document.body.removeChild(a);
+                      addLog("Downloaded result file");
+                    }}
+                  >
+                    <Download className="w-4 h-4 mr-2" />
+                    Download
+                  </Button>
+                </div>
+              </div>
+              <pre className="p-4 bg-gray-50 rounded-lg overflow-auto max-h-[600px] text-sm font-mono">
+                {result}
+              </pre>
+            </div>
+          )}
+        </div>
+      </div>
+    </main>
   );
 }
