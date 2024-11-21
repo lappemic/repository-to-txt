@@ -1,6 +1,5 @@
-// src/app/api/analyze/route.ts
 import { NextResponse } from "next/server";
-import { simpleGit } from "simple-git";
+import { download } from "@vercel/git-hooks";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
@@ -18,16 +17,12 @@ export async function POST(req: Request) {
 
   try {
     let { url } = await req.json();
-    log(`Original repository URL: ${url}`);
+    log(`Processing repository URL: ${url}`);
 
-    // Convert SSH URL to HTTPS if needed
+    // Convert URL to standard GitHub HTTPS format
     url = convertToHttpsUrl(url);
-    log(`Converted repository URL: ${url}`);
 
-    // Create encoder for streaming response
     const encoder = new TextEncoder();
-
-    // Create a stream
     const stream = new TransformStream();
     const writer = stream.writable.getWriter();
 
@@ -38,7 +33,6 @@ export async function POST(req: Request) {
     };
 
     // Process repository in background
-    log("Starting repository processing");
     processRepository(url, sendMessage)
       .catch(async (error) => {
         log(`Error during processing: ${error.message}`);
@@ -49,10 +43,11 @@ export async function POST(req: Request) {
         await writer.close();
       });
 
-    log("Returning stream response");
     return new NextResponse(stream.readable);
   } catch (error: unknown) {
-    log(`Error in POST handler: ${error instanceof Error ? error.message : "Unknown error"}`);
+    log(
+      `Error in POST handler: ${error instanceof Error ? error.message : "Unknown error"}`
+    );
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
       { status: 500 }
@@ -60,29 +55,27 @@ export async function POST(req: Request) {
   }
 }
 
-// New function to convert GitHub URLs to HTTPS format
 function convertToHttpsUrl(url: string): string {
+  // Remove trailing .git if present
+  url = url.replace(/\.git$/, "");
+
   // Already HTTPS
-  if (url.startsWith('https://')) {
+  if (url.startsWith("https://")) {
     return url;
   }
 
-  // Convert SSH format to HTTPS
-  if (url.startsWith('git@github.com:')) {
-    return url.replace('git@github.com:', 'https://github.com/');
+  // Extract owner and repo from various formats
+  let owner, repo;
+
+  if (url.startsWith("git@github.com:")) {
+    [owner, repo] = url.replace("git@github.com:", "").split("/");
+  } else if (url.includes("/")) {
+    [owner, repo] = url.split("/").slice(-2);
+  } else {
+    throw new Error("Invalid GitHub repository URL format");
   }
 
-  // Handle git:// protocol
-  if (url.startsWith('git://')) {
-    return url.replace('git://', 'https://');
-  }
-
-  // If it's just a repo path like 'username/repo'
-  if (url.split('/').length === 2 && !url.includes('://')) {
-    return `https://github.com/${url}`;
-  }
-
-  return url;
+  return `https://github.com/${owner}/${repo}`;
 }
 
 async function processRepository(
@@ -94,24 +87,20 @@ async function processRepository(
   log(`Temporary directory created: ${tempDir}`);
 
   try {
-    // Clone repository with specific options for Vercel environment
-    log("Starting repository clone");
-    await sendMessage({ progress: 5, status: "Cloning repository..." });
+    // Download repository using @vercel/git-hooks
+    log("Starting repository download");
+    await sendMessage({ progress: 5, status: "Downloading repository..." });
 
-    const git = simpleGit({
-      baseDir: tempDir,
-      binary: 'git',
-      maxConcurrentProcesses: 1,
-      trimmed: false,
+    const { owner, repo } = parseGitHubUrl(url);
+    await download({
+      repo: `https://github.com/${owner}/${repo}`,
+      dir: tempDir,
     });
 
-    // Shallow clone to improve performance
-    await git.clone(url, tempDir, ['--depth', '1']);
-    log("Repository cloned successfully");
-
+    log("Repository downloaded successfully");
     await sendMessage({
       progress: 20,
-      status: "Repository cloned successfully",
+      status: "Repository downloaded successfully",
     });
 
     // Get all files recursively
@@ -123,43 +112,33 @@ async function processRepository(
     log(`Found ${totalFiles} files in repository`);
 
     let processedFiles = 0;
+    const batchSize = 10;
+    let currentBatch = "";
 
     await sendMessage({
       progress: 30,
       status: `Found ${totalFiles} files to analyze`,
     });
 
-    // Process files in smaller batches
-    const batchSize = 10;
-    let currentBatch = "";
-
     // Process each file
     for (const file of files) {
       const relPath = path.relative(tempDir, file);
       const ext = path.extname(file);
-      log(`Processing file: ${relPath}`);
 
-      // Skip if file should be excluded
       if (
         EXCLUDED_FILES.includes(path.basename(file)) ||
         EXCLUDED_DIRS.some((dir) => relPath.includes(dir)) ||
         (!ALLOWED_EXTENSIONS.includes(ext) &&
           path.basename(file) !== "README.md")
       ) {
-        log(`Skipping excluded file: ${relPath}`);
         continue;
       }
 
-      // Read and format file content
       const content = await fs.readFile(file, "utf-8");
-      log(`Read ${content.length} bytes from ${relPath}`);
-
       currentBatch += `// Path: ${relPath}\n${content}\n\n`;
       processedFiles++;
 
-      // Send batch when it reaches the batch size or it's the last file
       if (processedFiles % batchSize === 0 || processedFiles === totalFiles) {
-        log(`Sending batch of ${currentBatch.length} bytes`);
         await sendMessage({ content: currentBatch });
         currentBatch = "";
 
@@ -171,7 +150,6 @@ async function processRepository(
       }
     }
 
-    log("Processing complete");
     await sendMessage({ progress: 100, status: "Analysis complete!" });
   } catch (error: unknown) {
     log(
@@ -180,10 +158,16 @@ async function processRepository(
     throw error;
   } finally {
     // Cleanup
-    log(`Cleaning up temporary directory: ${tempDir}`);
     await fs.rm(tempDir, { recursive: true, force: true });
-    log("Cleanup complete");
   }
+}
+
+function parseGitHubUrl(url: string) {
+  const match = url.match(/github\.com[/:]([\w-]+)\/([\w-]+)/);
+  if (!match) {
+    throw new Error("Invalid GitHub URL format");
+  }
+  return { owner: match[1], repo: match[2] };
 }
 
 async function getAllFiles(dir: string): Promise<string[]> {
