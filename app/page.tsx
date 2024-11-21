@@ -1,12 +1,11 @@
-// src/app/page.tsx
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
-import { Loader2, ClipboardCopy, Github, Download } from "lucide-react";
+import { Loader2, ClipboardCopy, Github, Download, Upload } from "lucide-react";
 
 export default function Home() {
   const [url, setUrl] = useState("");
@@ -16,9 +15,10 @@ export default function Home() {
   const [result, setResult] = useState("");
   const [status, setStatus] = useState("");
   const [logs, setLogs] = useState<string[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
 
   const addLog = (message: string) => {
-    console.log(message); // Console logging
+    console.log(message);
     setLogs((prev) => [...prev, `${new Date().toISOString()}: ${message}`]);
   };
 
@@ -27,6 +27,121 @@ export default function Home() {
     addLog(`URL validation: ${url} is ${isValid ? "valid" : "invalid"}`);
     return isValid;
   };
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  }, []);
+
+  const processLocalRepository = async (items: DataTransferItemList) => {
+    const files: { path: string; content: string }[] = [];
+    const processEntry = async (entry: FileSystemEntry, path = "") => {
+      if (entry.isFile) {
+        const fileEntry = entry as FileSystemFileEntry;
+        return new Promise<void>((resolve) => {
+          fileEntry.file(async (file) => {
+            const ext = file.name.split(".").pop()?.toLowerCase();
+            const allowedExts = ["js", "jsx", "ts", "tsx", "py", "json", "md"];
+            const excludedFiles = ["package-lock.json", "yarn.lock"];
+
+            if (
+              !excludedFiles.includes(file.name) &&
+              (allowedExts?.includes(ext || "") || file.name === "README.md")
+            ) {
+              const content = await file.text();
+              const fullPath = path ? `${path}/${file.name}` : file.name;
+              files.push({ path: fullPath, content });
+
+              setProgress((prev) => Math.min(90, prev + 2));
+              setStatus(`Processing: ${fullPath}`);
+              addLog(`Processed file: ${fullPath}`);
+            }
+            resolve();
+          });
+        });
+      } else if (entry.isDirectory) {
+        const dirEntry = entry as FileSystemDirectoryEntry;
+        const dirReader = dirEntry.createReader();
+
+        const readEntries = (): Promise<FileSystemEntry[]> => {
+          return new Promise((resolve) => {
+            dirReader.readEntries((entries) => {
+              resolve(entries);
+            });
+          });
+        };
+
+        const entries = await readEntries();
+        const excludedDirs = ["node_modules", ".next", "__pycache__", ".git"];
+        const dirPath = path ? `${path}/${entry.name}` : entry.name;
+
+        if (!excludedDirs.includes(entry.name)) {
+          for (const childEntry of entries) {
+            await processEntry(childEntry, dirPath);
+          }
+        }
+      }
+    };
+
+    for (let i = 0; i < items.length; i++) {
+      const entry = items[i].webkitGetAsEntry();
+      if (entry) {
+        await processEntry(entry);
+      }
+    }
+
+    // Sort files and combine contents
+    files.sort((a, b) => a.path.localeCompare(b.path));
+    let result = "";
+    for (const file of files) {
+      result += `// Path: ${file.path}\n${file.content}\n\n`;
+    }
+
+    return result;
+  };
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    setIsLoading(true);
+    setError("");
+    setProgress(0);
+    setResult("");
+    setStatus("Processing local repository...");
+    setLogs([]);
+
+    try {
+      addLog("Starting local repository processing");
+      const items = e.dataTransfer.items;
+
+      if (items) {
+        const result = await processLocalRepository(items);
+        setResult(result);
+        setProgress(100);
+        setStatus("Analysis complete!");
+        addLog("Local repository processing completed");
+      }
+    } catch (err) {
+      const errorMessage =
+        err instanceof Error
+          ? err.message
+          : "An error occurred while processing the local repository";
+      setError(errorMessage);
+      setStatus("Error occurred");
+      addLog(`Error in local processing: ${errorMessage}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -76,7 +191,6 @@ export default function Home() {
         }
 
         const chunk = decoder.decode(value, { stream: true });
-        addLog(`Received chunk of ${chunk.length} bytes`);
         buffer += chunk;
 
         const lines = buffer.split("\n");
@@ -99,32 +213,17 @@ export default function Home() {
               setStatus(data.status);
             }
             if (data.content) {
-              addLog(`Received content of ${data.content.length} characters`);
               setResult((prev) => prev + data.content);
             }
           } catch (e) {
-            addLog(`Error parsing message: ${e}`);
-            console.error("Error parsing message:", line, e);
+            addLog(`Error parsing message: ${line}, ${e}`);
           }
-        }
-      }
-
-      if (buffer) {
-        addLog("Processing remaining buffer");
-        try {
-          const data = JSON.parse(buffer);
-          if (data.content) {
-            setResult((prev) => prev + data.content);
-          }
-        } catch (e) {
-          addLog(`Error parsing final buffer: ${e}`);
-          console.error("Error parsing final message:", buffer, e);
         }
       }
 
       setStatus("Analysis complete");
       addLog("Conversion completed successfully");
-    } catch (err: unknown) {
+    } catch (err) {
       const errorMessage =
         err instanceof Error
           ? err.message
@@ -144,12 +243,32 @@ export default function Home() {
         <div className="space-y-2">
           <h1 className="text-4xl font-bold">Repository to txt</h1>
           <p className="text-gray-500">
-            Enter a GitHub repository URL to generate a consolidated view of the
-            codebase.
+            Drag and drop a local repository folder or enter a GitHub repository
+            URL to generate a consolidated view of the codebase.
           </p>
         </div>
 
         <div className="bg-white rounded-lg shadow-sm p-6 space-y-6">
+          {/* Drag and Drop Area */}
+          <div
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors duration-200 ${
+              isDragging
+                ? "border-primary bg-primary/5"
+                : "border-gray-200 hover:border-primary/50"
+            } ${isLoading ? "pointer-events-none opacity-50" : ""}`}
+          >
+            <Upload className="w-12 h-12 mx-auto mb-4 text-gray-400" />
+            <p className="text-lg font-medium">
+              Drag and drop your repository folder here
+            </p>
+            <p className="text-sm text-gray-500 mt-1">
+              Or use the GitHub URL input below
+            </p>
+          </div>
+
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="flex gap-2">
               <Input
@@ -213,13 +332,13 @@ export default function Home() {
                     variant="outline"
                     onClick={() => {
                       const blob = new Blob([result], { type: "text/plain" });
-                      const downloadUrl = window.URL.createObjectURL(blob);
+                      const url = window.URL.createObjectURL(blob);
                       const a = document.createElement("a");
-                      a.href = downloadUrl;
-                      a.download = `${url.split("/").pop() || "repository"}-analysis.txt`;
+                      a.href = url;
+                      a.download = "repository-analysis.txt";
                       document.body.appendChild(a);
                       a.click();
-                      window.URL.revokeObjectURL(downloadUrl);
+                      window.URL.revokeObjectURL(url);
                       document.body.removeChild(a);
                       addLog("Downloaded result file");
                     }}
