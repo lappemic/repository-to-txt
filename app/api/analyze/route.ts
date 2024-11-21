@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
-import { download } from "@vercel/git-hooks";
-import fs from "fs/promises";
-import path from "path";
-import os from "os";
+import { basename, extname } from 'path';
+
+// Remove unused interface
+interface FileSystemItem {
+  path: string;
+  type: "file" | "directory";
+}
 
 const ALLOWED_EXTENSIONS = [".js", ".jsx", ".ts", ".tsx", ".py", ".json"];
 const EXCLUDED_FILES = ["package-lock.json", "yarn.lock"];
@@ -16,11 +19,10 @@ export async function POST(req: Request) {
   log("Received analyze request");
 
   try {
-    let { url } = await req.json();
+    const { url } = await req.json();
     log(`Processing repository URL: ${url}`);
 
-    // Convert URL to standard GitHub HTTPS format
-    url = convertToHttpsUrl(url);
+    const { owner, repo } = parseGitHubUrl(url);
 
     const encoder = new TextEncoder();
     const stream = new TransformStream();
@@ -32,8 +34,7 @@ export async function POST(req: Request) {
       await writer.write(encoded);
     };
 
-    // Process repository in background
-    processRepository(url, sendMessage)
+    processRepository(owner, repo, sendMessage)
       .catch(async (error) => {
         log(`Error during processing: ${error.message}`);
         await sendMessage({ error: error.message });
@@ -55,97 +56,122 @@ export async function POST(req: Request) {
   }
 }
 
-function convertToHttpsUrl(url: string): string {
+function parseGitHubUrl(url: string): { owner: string; repo: string } {
   // Remove trailing .git if present
   url = url.replace(/\.git$/, "");
 
-  // Already HTTPS
-  if (url.startsWith("https://")) {
-    return url;
+  const match = url.match(/github\.com[/:]([\w-]+)\/([\w-]+)/);
+  if (!match) {
+    throw new Error("Invalid GitHub URL format");
+  }
+  return { owner: match[1], repo: match[2] };
+}
+
+async function getRepoContents(
+  owner: string,
+  repo: string,
+  path: string = ""
+): Promise<unknown[]> {
+  const response = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
+    {
+      headers: {
+        Accept: "application/vnd.github.v3+json",
+        "User-Agent": "Repository-To-Text-App",
+      },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`GitHub API error: ${response.statusText}`);
   }
 
-  // Extract owner and repo from various formats
-  let owner, repo;
+  return response.json();
+}
 
-  if (url.startsWith("git@github.com:")) {
-    [owner, repo] = url.replace("git@github.com:", "").split("/");
-  } else if (url.includes("/")) {
-    [owner, repo] = url.split("/").slice(-2);
-  } else {
-    throw new Error("Invalid GitHub repository URL format");
+async function getFileContent(url: string): Promise<string> {
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/vnd.github.v3.raw",
+      "User-Agent": "Repository-To-Text-App",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch file content: ${response.statusText}`);
   }
 
-  return `https://github.com/${owner}/${repo}`;
+  return response.text();
 }
 
 async function processRepository(
-  url: string,
+  owner: string,
+  repo: string,
   sendMessage: (message: object) => Promise<void>
 ) {
-  log("Creating temporary directory");
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "repo-"));
-  log(`Temporary directory created: ${tempDir}`);
-
   try {
-    // Download repository using @vercel/git-hooks
-    log("Starting repository download");
-    await sendMessage({ progress: 5, status: "Downloading repository..." });
-
-    const { owner, repo } = parseGitHubUrl(url);
-    await download({
-      repo: `https://github.com/${owner}/${repo}`,
-      dir: tempDir,
-    });
-
-    log("Repository downloaded successfully");
+    log("Starting repository processing");
     await sendMessage({
-      progress: 20,
-      status: "Repository downloaded successfully",
+      progress: 5,
+      status: "Fetching repository contents...",
     });
 
-    // Get all files recursively
-    log("Scanning repository for files");
-    await sendMessage({ progress: 25, status: "Scanning repository..." });
+    const fileContents: { path: string; content: string }[] = [];
+    const processedPaths = new Set<string>();
 
-    const files = await getAllFiles(tempDir);
-    const totalFiles = files.length;
-    log(`Found ${totalFiles} files in repository`);
+    const processContents = async (path: string = "") => {
+      const contents = await getRepoContents(owner, repo, path);
 
-    let processedFiles = 0;
-    const batchSize = 10;
-    let currentBatch = "";
+      for (const item of contents as { path: string }[]) {
+        if (processedPaths.has(item.path)) continue;
+        processedPaths.add(item.path);
 
-    await sendMessage({
-      progress: 30,
-      status: `Found ${totalFiles} files to analyze`,
-    });
+        if ((item as FileSystemItem).type === "directory") {
+          if (!EXCLUDED_DIRS.some((dir) => item.path.includes(dir))) {
+            await processContents(item.path);
+          }
+        } else if ((item as FileSystemItem).type === "file") {
+          const ext = extname(item.path);
+          if (
+            !EXCLUDED_FILES.includes(basename(item.path)) &&
+            (ALLOWED_EXTENSIONS.includes(ext) ||
+              basename(item.path) === "README.md")
+          ) {
+            const content = await getFileContent((item as { path: string; download_url: string }).download_url);
+            fileContents.push({ path: item.path, content });
 
-    // Process each file
-    for (const file of files) {
-      const relPath = path.relative(tempDir, file);
-      const ext = path.extname(file);
-
-      if (
-        EXCLUDED_FILES.includes(path.basename(file)) ||
-        EXCLUDED_DIRS.some((dir) => relPath.includes(dir)) ||
-        (!ALLOWED_EXTENSIONS.includes(ext) &&
-          path.basename(file) !== "README.md")
-      ) {
-        continue;
+            await sendMessage({
+              progress: Math.min(
+                90,
+                5 + (fileContents.length * 85) / contents.length
+              ),
+              status: `Processing file: ${item.path}`,
+            });
+          }
+        }
       }
+    };
 
-      const content = await fs.readFile(file, "utf-8");
-      currentBatch += `// Path: ${relPath}\n${content}\n\n`;
-      processedFiles++;
+    await processContents();
 
-      if (processedFiles % batchSize === 0 || processedFiles === totalFiles) {
+    // Sort files by path and combine contents
+    fileContents.sort((a, b) => a.path.localeCompare(b.path));
+
+    let currentBatch = "";
+    const batchSize = 10;
+
+    for (let i = 0; i < fileContents.length; i++) {
+      const { path: filePath, content } = fileContents[i];
+      currentBatch += `// Path: ${filePath}\n${content}\n\n`;
+
+      if ((i + 1) % batchSize === 0 || i === fileContents.length - 1) {
         await sendMessage({ content: currentBatch });
         currentBatch = "";
 
-        const progress = 30 + Math.floor((processedFiles / totalFiles) * 65);
+        const progress = 90 + Math.floor(((i + 1) / fileContents.length) * 10);
         await sendMessage({
           progress,
-          status: `Processing files... (${processedFiles}/${totalFiles})`,
+          status: `Processing files... (${i + 1}/${fileContents.length})`,
         });
       }
     }
@@ -156,34 +182,7 @@ async function processRepository(
       `Error during processing: ${error instanceof Error ? error.message : "Unknown error"}`
     );
     throw error;
-  } finally {
-    // Cleanup
-    await fs.rm(tempDir, { recursive: true, force: true });
   }
-}
-
-function parseGitHubUrl(url: string) {
-  const match = url.match(/github\.com[/:]([\w-]+)\/([\w-]+)/);
-  if (!match) {
-    throw new Error("Invalid GitHub URL format");
-  }
-  return { owner: match[1], repo: match[2] };
-}
-
-async function getAllFiles(dir: string): Promise<string[]> {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  const files: string[] = [];
-
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...(await getAllFiles(fullPath)));
-    } else {
-      files.push(fullPath);
-    }
-  }
-
-  return files;
 }
 
 export const runtime = "nodejs";
