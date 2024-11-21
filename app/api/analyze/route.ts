@@ -17,8 +17,12 @@ export async function POST(req: Request) {
   log("Received analyze request");
 
   try {
-    const { url } = await req.json();
-    log(`Processing repository URL: ${url}`);
+    let { url } = await req.json();
+    log(`Original repository URL: ${url}`);
+
+    // Convert SSH URL to HTTPS if needed
+    url = convertToHttpsUrl(url);
+    log(`Converted repository URL: ${url}`);
 
     // Create encoder for streaming response
     const encoder = new TextEncoder();
@@ -48,16 +52,37 @@ export async function POST(req: Request) {
     log("Returning stream response");
     return new NextResponse(stream.readable);
   } catch (error: unknown) {
-    log(
-      `Error in POST handler: ${
-        error instanceof Error ? error.message : "Unknown error"
-      }`
-    );
+    log(`Error in POST handler: ${error instanceof Error ? error.message : "Unknown error"}`);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
       { status: 500 }
     );
   }
+}
+
+// New function to convert GitHub URLs to HTTPS format
+function convertToHttpsUrl(url: string): string {
+  // Already HTTPS
+  if (url.startsWith('https://')) {
+    return url;
+  }
+
+  // Convert SSH format to HTTPS
+  if (url.startsWith('git@github.com:')) {
+    return url.replace('git@github.com:', 'https://github.com/');
+  }
+
+  // Handle git:// protocol
+  if (url.startsWith('git://')) {
+    return url.replace('git://', 'https://');
+  }
+
+  // If it's just a repo path like 'username/repo'
+  if (url.split('/').length === 2 && !url.includes('://')) {
+    return `https://github.com/${url}`;
+  }
+
+  return url;
 }
 
 async function processRepository(
@@ -69,12 +94,19 @@ async function processRepository(
   log(`Temporary directory created: ${tempDir}`);
 
   try {
-    // Clone repository
+    // Clone repository with specific options for Vercel environment
     log("Starting repository clone");
     await sendMessage({ progress: 5, status: "Cloning repository..." });
 
-    const git = simpleGit();
-    await git.clone(url, tempDir);
+    const git = simpleGit({
+      baseDir: tempDir,
+      binary: 'git',
+      maxConcurrentProcesses: 1,
+      trimmed: false,
+    });
+
+    // Shallow clone to improve performance
+    await git.clone(url, tempDir, ['--depth', '1']);
     log("Repository cloned successfully");
 
     await sendMessage({
@@ -143,9 +175,7 @@ async function processRepository(
     await sendMessage({ progress: 100, status: "Analysis complete!" });
   } catch (error: unknown) {
     log(
-      `Error during processing: ${
-        error instanceof Error ? error.message : "Unknown error"
-      }`
+      `Error during processing: ${error instanceof Error ? error.message : "Unknown error"}`
     );
     throw error;
   } finally {

@@ -44,7 +44,7 @@ export default function Home() {
     setResult("");
     setStatus("Initializing...");
     setLogs([]);
-    addLog("Starting repository analysis");
+    addLog("Starting repository conversion");
 
     try {
       addLog("Sending request to API");
@@ -123,7 +123,7 @@ export default function Home() {
       }
 
       setStatus("Analysis complete");
-      addLog("Analysis completed successfully");
+      addLog("Conversion completed successfully");
     } catch (err: unknown) {
       const errorMessage =
         err instanceof Error
@@ -131,7 +131,7 @@ export default function Home() {
           : "An error occurred while analyzing the repository";
       setError(errorMessage);
       setStatus("Error occurred");
-      addLog(`Error in analysis: ${errorMessage}`);
+      addLog(`Error in conversion: ${errorMessage}`);
     } finally {
       setIsLoading(false);
       addLog("Process finished");
@@ -166,7 +166,7 @@ export default function Home() {
                 ) : (
                   <Github className="w-4 h-4 mr-2" />
                 )}
-                Analyze
+                Convert to txt
               </Button>
             </div>
 
@@ -197,7 +197,7 @@ export default function Home() {
           {result && (
             <div className="space-y-4">
               <div className="flex justify-between items-center">
-                <h2 className="text-xl font-semibold">Analysis Result</h2>
+                <h2 className="text-xl font-semibold">Conversion Result</h2>
                 <div className="flex gap-2">
                   <Button
                     variant="outline"
