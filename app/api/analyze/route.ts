@@ -8,7 +8,7 @@ interface FileSystemItem {
 }
 
 const ALLOWED_EXTENSIONS = [".js", ".jsx", ".ts", ".tsx", ".py", ".json"];
-const EXCLUDED_FILES = ["package-lock.json", "yarn.lock"];
+const EXCLUDED_FILES = ["package-lock.json", "yarn.lock", "package.json", "pnpm-lock.json", ".eslintrc.json", ".prettierrc.json"];
 const EXCLUDED_DIRS = ["node_modules", ".next", "__pycache__", ".git"];
 
 function log(message: string) {
@@ -184,5 +184,5 @@ async function processRepository(
     throw error;
   }
 }
-
 export const runtime = "nodejs";
+
