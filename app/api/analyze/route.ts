@@ -8,8 +8,8 @@ interface FileSystemItem {
 }
 
 const ALLOWED_EXTENSIONS = [".js", ".jsx", ".ts", ".tsx", ".py", ".json"];
-const EXCLUDED_FILES = ["package-lock.json", "yarn.lock", "package.json", "pnpm-lock.json", ".eslintrc.json", ".prettierrc.json"];
-const EXCLUDED_DIRS = ["node_modules", ".next", "__pycache__", ".git"];
+const EXCLUDED_FILES = ["package-lock.json", "yarn.lock", "package.json", "pnpm-lock.json", ".eslintrc.json", ".prettierrc.json", "README.md"];
+const EXCLUDED_DIRS = ["node_modules", ".next", "__pycache__", ".git", "_next"];
 
 function log(message: string) {
   console.log(`[${new Date().toISOString()}] ${message}`);
