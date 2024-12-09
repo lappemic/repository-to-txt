@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Loader2, ClipboardCopy, Github, Download, Upload } from "lucide-react";
+import { EXCLUDED_FILES, EXCLUDED_DIRS, ALLOWED_EXTENSIONS } from "@/app/constants/files";
 
 export default function Home() {
   const [url, setUrl] = useState("");
@@ -47,12 +48,11 @@ export default function Home() {
         const fileEntry = entry as FileSystemFileEntry;
         return new Promise<void>((resolve) => {
           fileEntry.file(async (file) => {
-            const ext = file.name.split(".").pop()?.toLowerCase();
-            const allowedExts = ["js", "jsx", "ts", "tsx", "py", "json", "md"];
-            const excludedFiles = ["package-lock.json", "yarn.lock"];
+            const ext = "." + file.name.split(".").pop()?.toLowerCase();
+            const allowedExts = ALLOWED_EXTENSIONS;
 
             if (
-              !excludedFiles.includes(file.name) &&
+              !EXCLUDED_FILES.includes(file.name) &&
               (allowedExts?.includes(ext || "") || file.name === "README.md")
             ) {
               const content = await file.text();
@@ -79,10 +79,9 @@ export default function Home() {
         };
 
         const entries = await readEntries();
-        const excludedDirs = ["node_modules", ".next", "__pycache__", ".git"];
         const dirPath = path ? `${path}/${entry.name}` : entry.name;
 
-        if (!excludedDirs.includes(entry.name)) {
+        if (!EXCLUDED_DIRS.includes(entry.name)) {
           for (const childEntry of entries) {
             await processEntry(childEntry, dirPath);
           }
@@ -141,6 +140,7 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
